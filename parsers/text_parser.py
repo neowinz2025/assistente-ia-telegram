@@ -2,25 +2,32 @@ import re
 from typing import Dict, Any
 from utils.helpers import clean_digits, parse_currency, parse_date, format_phone
 
+
+def _extrair_valor_da_linha(linha: str, prefixo_regex: str) -> str:
+    """Remove o prefixo de uma linha e retorna o valor restante."""
+    return re.sub(prefixo_regex, '', linha, flags=re.IGNORECASE).strip()
+
+
 def parse_telegram_text(text: str) -> Dict[str, Any]:
     """
     Extrai dados do cliente, fornecedor e valores a partir da mensagem de texto recebida no Telegram.
-    
-    Estrutura esperada:
+
+    Estrutura esperada (flexível, case-insensitive):
     Dados do cliente
     Nome: ...
     CPF: ...
     Data de Nascimento: ...
     E-mail: ...
     Tel: ...
-    
+
     Dados do fornecedor
     Nome: ...
     CPF/CNPJ: ...
     Tel: ...
-    
+
     Valor da venda: ...
     Valor de custo: ...
+    Forma de pagamento: ...
     """
     result = {
         "cliente": {
@@ -44,67 +51,73 @@ def parse_telegram_text(text: str) -> Dict[str, Any]:
         return result
 
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-
     current_section = None
 
-    for i, line in enumerate(lines):
-        line_lower = line.lower()
+    for line in lines:
+        ll = line.lower()
 
-        # Identificação de Seções
-        if "dados do cliente" in line_lower:
+        # ── Detecção de Seções ──────────────────────────────────────────────
+        if re.search(r'dados\s+do\s+cliente', ll):
             current_section = "cliente"
             continue
-        elif "dados do fornecedor" in line_lower:
+        if re.search(r'dados\s+do\s+fornecedor', ll):
             current_section = "fornecedor"
             continue
-        elif "valor da venda" in line_lower:
-            current_section = "valor_venda"
-            # Se a própria linha contém o valor (ex: "Valor da venda: R$ 1500,00" ou "Valor da venda 1500")
-            val = re.sub(r'(?i)valor\s+da\s+venda\s*[:\-]*', '', line).strip()
+
+        # Valor da venda (verifica primeiro para não cair no "pagamento" abaixo)
+        if re.search(r'valor\s+da\s+venda', ll):
+            val = _extrair_valor_da_linha(line, r'valor\s+da\s+venda\s*[:\-]?\s*')
             if val:
                 result["valor_venda"] = parse_currency(val)
+            current_section = "valor_venda"
             continue
-        elif "valor de custo" in line_lower:
-            current_section = "valor_custo"
-            val = re.sub(r'(?i)valor\s+de\s+custo\s*[:\-]*', '', line).strip()
+
+        # Valor de custo
+        if re.search(r'valor\s+de\s+custo', ll):
+            val = _extrair_valor_da_linha(line, r'valor\s+de\s+custo\s*[:\-]?\s*')
             if val:
                 result["valor_custo"] = parse_currency(val)
+            current_section = "valor_custo"
             continue
-        elif "forma de pagamento" in line_lower or "pagamento" in line_lower:
-            current_section = "forma_pagamento"
-            val = re.sub(r'(?i)(forma\s+de\s+)?pagamento\s*[:\-]*', '', line).strip()
+
+        # Forma de pagamento (após checar valor_venda e valor_custo!)
+        if re.search(r'forma\s+de\s+pagamento|forma\s+pgto', ll):
+            val = _extrair_valor_da_linha(line, r'forma\s+(de\s+)?pagamento\s*[:\-]?\s*|forma\s+pgto\s*[:\-]?\s*')
             if val:
                 result["forma_pagamento"] = val
+            current_section = "forma_pagamento"
             continue
 
-        # Processamento por chave-valor na linha
-        if ":" in line or "-" in line:
-            # Separa chave e valor
-            parts = re.split(r'[:\-]', line, maxsplit=1)
+        # ── Processamento das Linhas por Seção ──────────────────────────────
+        # Usa apenas ":" como separador para evitar quebrar nomes/valores com "-"
+        if ":" in line:
+            parts = line.split(":", 1)
             key = parts[0].strip().lower()
-            val = parts[1].strip() if len(parts) > 1 else ""
+            val = parts[1].strip()
 
-            if "forma" in key or "pagamento" in key:
+            # Qualquer seção pode ter forma de pagamento inline com ":"
+            if re.search(r'forma.*(pag|pgto)', key):
                 result["forma_pagamento"] = val
+                continue
 
             if current_section == "cliente":
-                if "nome" in key:
+                if re.search(r'\bnome\b', key):
                     result["cliente"]["nome"] = val
-                elif "cpf" in key:
+                elif re.search(r'\bcpf\b', key):
                     result["cliente"]["cpf"] = clean_digits(val)
-                elif "nascimento" in key or "data" in key:
+                elif re.search(r'nascimento|data.*nasc', key):
                     result["cliente"]["data_nascimento"] = parse_date(val) or val
-                elif "mail" in key:
+                elif re.search(r'e.?mail|email', key):
                     result["cliente"]["email"] = val
-                elif "tel" in key or "celular" in key or "fone" in key:
+                elif re.search(r'tel|fone|celular|whatsapp', key):
                     result["cliente"]["telefone"] = format_phone(val)
 
             elif current_section == "fornecedor":
-                if "nome" in key:
+                if re.search(r'\bnome\b', key):
                     result["fornecedor"]["nome"] = val
-                elif "cpf" in key or "cnpj" in key:
+                elif re.search(r'cpf|cnpj', key):
                     result["fornecedor"]["cpf_cnpj"] = clean_digits(val)
-                elif "tel" in key or "celular" in key or "fone" in key:
+                elif re.search(r'tel|fone|celular|whatsapp', key):
                     result["fornecedor"]["telefone"] = format_phone(val)
 
             elif current_section == "valor_venda" and not result["valor_venda"]:
@@ -114,48 +127,33 @@ def parse_telegram_text(text: str) -> Dict[str, Any]:
                 result["valor_custo"] = parse_currency(val)
 
         else:
-            # Se a linha não tem chave-valor explícito com `:` ou `-`
-            # Verifica se é um valor numérico para valores de venda/custo se estivermos na seção correspondente
-            if current_section == "valor_venda" and result["valor_venda"] == 0.0:
-                result["valor_venda"] = parse_currency(line)
-            elif current_section == "valor_custo" and result["valor_custo"] == 0.0:
-                result["valor_custo"] = parse_currency(line)
-            else:
-                # Tentar extrair por padrão de conteúdo (Regex)
-                # CPF
-                if not result["cliente"]["cpf"] and re.search(r'\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b', line):
-                    cpf_match = re.search(r'\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b', line)
-                    if cpf_match:
-                        if current_section == "fornecedor":
-                            result["fornecedor"]["cpf_cnpj"] = clean_digits(cpf_match.group(0))
-                        else:
-                            result["cliente"]["cpf"] = clean_digits(cpf_match.group(0))
+            # Linha sem ":" – tenta como valor puro se estiver dentro de seção financeira
+            if current_section == "valor_venda" and not result["valor_venda"]:
+                v = parse_currency(line)
+                if v > 0:
+                    result["valor_venda"] = v
+            elif current_section == "valor_custo" and not result["valor_custo"]:
+                v = parse_currency(line)
+                if v > 0:
+                    result["valor_custo"] = v
 
-                # CNPJ
-                elif not result["fornecedor"]["cpf_cnpj"] and re.search(r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b', line):
-                    cnpj_match = re.search(r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b', line)
-                    if cnpj_match:
-                        result["fornecedor"]["cpf_cnpj"] = clean_digits(cnpj_match.group(0))
-
-                # E-mail
-                elif not result["cliente"]["email"] and "@" in line:
-                    email_match = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', line)
-                    if email_match:
-                        result["cliente"]["email"] = email_match.group(0)
-
-                # Data
-                elif not result["cliente"]["data_nascimento"] and parse_date(line):
-                    result["cliente"]["data_nascimento"] = parse_date(line)
-
-    # Fallback de busca global via Regex se algum campo ainda estiver em branco
-    if not result["cliente"]["email"]:
-        email_match = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
-        if email_match:
-            result["cliente"]["email"] = email_match.group(0)
-
+    # ── Fallbacks globais via Regex ─────────────────────────────────────────
+    # CPF do cliente
     if not result["cliente"]["cpf"]:
-        cpf_match = re.search(r'(?i)cpf\s*[:\-]?\s*(\d{3}\.?\d{3}\.?\d{3}-?\d{2})', text)
-        if cpf_match:
-            result["cliente"]["cpf"] = clean_digits(cpf_match.group(1))
+        m = re.search(r'(?i)cpf\s*[:\-]?\s*(\d[\d.\-]+)', text)
+        if m:
+            result["cliente"]["cpf"] = clean_digits(m.group(1))
+
+    # CPF/CNPJ do fornecedor
+    if not result["fornecedor"]["cpf_cnpj"]:
+        m = re.search(r'(?i)cnpj\s*[:\-]?\s*([\d.\-/]+)', text)
+        if m:
+            result["fornecedor"]["cpf_cnpj"] = clean_digits(m.group(1))
+
+    # E-mail
+    if not result["cliente"]["email"]:
+        m = re.search(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}', text)
+        if m:
+            result["cliente"]["email"] = m.group(0)
 
     return result
