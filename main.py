@@ -174,7 +174,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(MessageHandler(filters.TEXT | filters.Document.MIME("application/pdf"), handle_emission))
+    app.add_handler(MessageHandler(filters.TEXT | filters.Document.ALL, handle_emission))
 
     print("🚀 Bot Telegram IDDAS rodando em modo polling...")
     app.run_polling()

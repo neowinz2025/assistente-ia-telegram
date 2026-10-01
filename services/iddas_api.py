@@ -69,20 +69,22 @@ class IddasApiClient:
             logger.info(f"[IDDAS API] Cliente CPF {cpf} já existe com ID {existing_id}")
             return existing_id
 
+        nome = (cliente_data.get("nome") or "").strip() or "Cliente Consumidor"
         url = f"{self.base_url}/pessoa"
         payload = {
             "tipo_cliente": "S",
             "tipo_passageiro": "S",
             "tipo_fornecedor": "N",
-            "nome": cliente_data.get("nome", "Cliente Sem Nome"),
+            "tipo_representante": "N",
+            "nome": nome,
             "cpf_cnpj": cpf,
             "nascimento": cliente_data.get("data_nascimento") or None,
             "email": cliente_data.get("email") or None,
             "celular": cliente_data.get("telefone") or None,
             "aceita_comunicacao": "S"
         }
-        # Remove valores None do payload
-        payload = {k: v for k, v in payload.items() if v is not None}
+        # Remove valores None ou vazios do payload
+        payload = {k: v for k, v in payload.items() if v is not None and v != ""}
 
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(url, headers=self._get_headers(), json=payload)
@@ -102,16 +104,18 @@ class IddasApiClient:
             logger.info(f"[IDDAS API] Fornecedor {cpf_cnpj} já existe com ID {existing_id}")
             return existing_id
 
+        nome = (fornecedor_data.get("nome") or "").strip() or "Fornecedor Consolidador"
         url = f"{self.base_url}/pessoa"
         payload = {
             "tipo_cliente": "N",
             "tipo_passageiro": "N",
             "tipo_fornecedor": "S",
-            "nome": fornecedor_data.get("nome", "Fornecedor Sem Nome"),
+            "tipo_representante": "N",
+            "nome": nome,
             "cpf_cnpj": cpf_cnpj,
             "celular": fornecedor_data.get("telefone") or None
         }
-        payload = {k: v for k, v in payload.items() if v is not None}
+        payload = {k: v for k, v in payload.items() if v is not None and v != ""}
 
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(url, headers=self._get_headers(), json=payload)
