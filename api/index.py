@@ -47,10 +47,10 @@ async def process_telegram_update(update_dict: dict):
         raw_text = msg.text or msg.caption or ""
 
         # Download do PDF se houver document anexo
-        if msg.document and msg.document.mime_type == "application/pdf":
+        if msg.document and (msg.document.mime_type == "application/pdf" or (msg.document.file_name and msg.document.file_name.lower().endswith(".pdf"))):
             telegram_file = await bot.get_file(msg.document.file_id)
             temp_dir = tempfile.gettempdir()
-            pdf_path = os.path.join(temp_dir, f"{msg.document.file_unique_id}_{msg.document.file_name}")
+            pdf_path = os.path.join(temp_dir, f"{msg.document.file_unique_id}_{msg.document.file_name or 'reserva.pdf'}")
             await telegram_file.download_to_drive(pdf_path)
             logger.info(f"[Vercel Webhook] PDF baixado com sucesso em: {pdf_path}")
 
@@ -60,6 +60,7 @@ async def process_telegram_update(update_dict: dict):
         fornecedor_info = text_data["fornecedor"]
         valor_venda = text_data["valor_venda"]
         valor_custo = text_data["valor_custo"]
+        forma_pagamento_texto = text_data.get("forma_pagamento", "")
 
         pdf_data = {}
         if pdf_path and os.path.exists(pdf_path):
@@ -75,13 +76,16 @@ async def process_telegram_update(update_dict: dict):
         api_client = IddasApiClient()
         await api_client.authenticate()
 
+        # Resolver Forma de Pagamento
+        forma_pagamento_id = await api_client.buscar_forma_pagamento_id(forma_pagamento_texto)
+
         # Cadastrar Cliente & Fornecedor
         cliente_id = await api_client.cadastrar_cliente(cliente_info)
         fornecedor_id = await api_client.cadastrar_fornecedor(fornecedor_info)
 
         # Criar Orçamento / Venda
         titulo_orcamento = f"Venda Voo {localizador} - {cliente_info.get('nome', 'Cliente')}".strip()
-        orcamento_id = await api_client.criar_orcamento(cliente_id, titulo_orcamento)
+        orcamento_id = await api_client.criar_orcamento(cliente_id, titulo_orcamento, forma_pagamento=forma_pagamento_texto)
 
         # Cadastrar Voos
         voos_cadastrados = 0
@@ -101,8 +105,8 @@ async def process_telegram_update(update_dict: dict):
             voos_cadastrados = 1
 
         # Lançar Receita e Despesa
-        rec_id = await api_client.lançar_receita(cliente_id, valor_venda, localizador)
-        desp_id = await api_client.lançar_despesa(fornecedor_id, valor_custo, localizador)
+        rec_id = await api_client.lançar_receita(cliente_id, valor_venda, localizador, forma_pagamento_id=forma_pagamento_id)
+        desp_id = await api_client.lançar_despesa(fornecedor_id, valor_custo, localizador, forma_pagamento_id=forma_pagamento_id)
 
         # Atualizar resposta ao usuário
         resumo = (

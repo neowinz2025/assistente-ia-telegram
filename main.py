@@ -66,11 +66,11 @@ async def handle_emission(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raw_text = msg.text or msg.caption or ""
 
         # 2. Download do PDF anexo (se houver)
-        if msg.document and msg.document.mime_type == "application/pdf":
+        if msg.document and (msg.document.mime_type == "application/pdf" or (msg.document.file_name and msg.document.file_name.lower().endswith(".pdf"))):
             file = await msg.document.get_file()
             temp_dir = os.path.join(os.getcwd(), "tmp_pdf")
             os.makedirs(temp_dir, exist_ok=True)
-            pdf_path = os.path.join(temp_dir, f"{msg.document.file_unique_id}_{msg.document.file_name}")
+            pdf_path = os.path.join(temp_dir, f"{msg.document.file_unique_id}_{msg.document.file_name or 'reserva.pdf'}")
             await file.download_to_drive(pdf_path)
             logger.info(f"[Bot] PDF baixado com sucesso em: {pdf_path}")
 
@@ -80,6 +80,8 @@ async def handle_emission(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fornecedor_info = text_data["fornecedor"]
         valor_venda = text_data["valor_venda"]
         valor_custo = text_data["valor_custo"]
+
+        forma_pagamento_texto = text_data.get("forma_pagamento", "")
 
         # 4. Parsing do PDF do Voo (se fornecido)
         pdf_data = {}
@@ -99,6 +101,9 @@ async def handle_emission(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text("🔑 *Autenticando na API IDDAS...*", parse_mode="Markdown")
         await api_client.authenticate()
 
+        # Resolver ID da Forma de Pagamento
+        forma_pagamento_id = await api_client.buscar_forma_pagamento_id(forma_pagamento_texto)
+
         # A. Cadastrar/Obter Cliente
         await status_msg.edit_text("👤 *Cadastrando/Buscando Cliente no IDDAS...*", parse_mode="Markdown")
         cliente_id = await api_client.cadastrar_cliente(cliente_info)
@@ -110,7 +115,7 @@ async def handle_emission(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # C. Criar Orçamento / Venda
         await status_msg.edit_text("📄 *Gerando Orçamento/Venda no IDDAS...*", parse_mode="Markdown")
         titulo_orcamento = f"Venda Voo {localizador} - {cliente_info.get('nome', 'Cliente')}".strip()
-        orcamento_id = await api_client.criar_orcamento(cliente_id, titulo_orcamento)
+        orcamento_id = await api_client.criar_orcamento(cliente_id, titulo_orcamento, forma_pagamento=forma_pagamento_texto)
 
         # D. Cadastrar Voos
         voos_cadastrados = 0
@@ -133,8 +138,8 @@ async def handle_emission(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # E. Lançar Financeiro (Receita e Despesa)
         await status_msg.edit_text("💰 *Lançando Receita e Despesa Financeira...*", parse_mode="Markdown")
-        rec_id = await api_client.lançar_receita(cliente_id, valor_venda, localizador)
-        desp_id = await api_client.lançar_despesa(fornecedor_id, valor_custo, localizador)
+        rec_id = await api_client.lançar_receita(cliente_id, valor_venda, localizador, forma_pagamento_id=forma_pagamento_id)
+        desp_id = await api_client.lançar_despesa(fornecedor_id, valor_custo, localizador, forma_pagamento_id=forma_pagamento_id)
 
         # 6. Resposta Final ao Usuário
         resumo = (

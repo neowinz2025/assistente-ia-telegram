@@ -36,7 +36,8 @@ def parse_telegram_text(text: str) -> Dict[str, Any]:
             "telefone": ""
         },
         "valor_venda": 0.0,
-        "valor_custo": 0.0
+        "valor_custo": 0.0,
+        "forma_pagamento": ""
     }
 
     if not text:
@@ -69,6 +70,12 @@ def parse_telegram_text(text: str) -> Dict[str, Any]:
             if val:
                 result["valor_custo"] = parse_currency(val)
             continue
+        elif "forma de pagamento" in line_lower or "pagamento" in line_lower:
+            current_section = "forma_pagamento"
+            val = re.sub(r'(?i)(forma\s+de\s+)?pagamento\s*[:\-]*', '', line).strip()
+            if val:
+                result["forma_pagamento"] = val
+            continue
 
         # Processamento por chave-valor na linha
         if ":" in line or "-" in line:
@@ -76,6 +83,9 @@ def parse_telegram_text(text: str) -> Dict[str, Any]:
             parts = re.split(r'[:\-]', line, maxsplit=1)
             key = parts[0].strip().lower()
             val = parts[1].strip() if len(parts) > 1 else ""
+
+            if "forma" in key or "pagamento" in key:
+                result["forma_pagamento"] = val
 
             if current_section == "cliente":
                 if "nome" in key:

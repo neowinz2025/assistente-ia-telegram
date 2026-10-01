@@ -127,16 +127,39 @@ class IddasApiClient:
             else:
                 raise Exception(f"Erro ao cadastrar fornecedor no IDDAS ({resp.status_code}): {resp.text}")
 
-    async def criar_orcamento(self, cliente_id: int, titulo: str) -> int:
-        """Cria o orçamento/venda vinculada ao Cliente."""
+    async def buscar_forma_pagamento_id(self, nome_forma: str) -> int:
+        """Busca o ID da Forma de Pagamento no IDDAS pelo nome (ex: Pix, Cartão, Boleto)."""
+        if not nome_forma:
+            return config.DEFAULT_FORMA_PAGAMENTO_ID
+
+        try:
+            url = f"{self.base_url}/forma"
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(url, headers=self._get_headers())
+                if resp.status_code == 200:
+                    data = resp.json()
+                    items = data if isinstance(data, list) else data.get("data", [])
+                    nome_lower = nome_forma.lower()
+                    for item in items:
+                        item_nome = (item.get("nome") or "").lower()
+                        if nome_lower in item_nome or item_nome in nome_lower:
+                            return item.get("id")
+        except Exception as e:
+            logger.warning(f"[IDDAS API] Erro ao buscar forma de pagamento: {e}")
+
+        return config.DEFAULT_FORMA_PAGAMENTO_ID
+
+    async def criar_orcamento(self, cliente_id: int, titulo: str, forma_pagamento: str = "") -> int:
+        """Cria o orçamento/venda vinculada ao Cliente com situação Aprovado (A)."""
         url = f"{self.base_url}/orcamento"
         today = datetime.now().strftime("%Y-%m-%d")
 
         payload = {
             "cliente": str(cliente_id),
             "canal_venda": str(config.DEFAULT_CANAL_VENDA_ID),
-            "situacao": "E",
+            "situacao": "A",
             "titulo": titulo,
+            "forma_pagamento": forma_pagamento or "",
             "passageiros_adulto": 1,
             "passageiros_crianca": 0,
             "passageiros_bebe": 0,
@@ -185,7 +208,25 @@ class IddasApiClient:
                 logger.error(f"[IDDAS API] Erro ao cadastrar voo: {resp.text}")
                 return 0
 
-    async def lançar_receita(self, cliente_id: int, valor: float, localizador: str) -> Optional[int]:
+    async def buscar_primeira_conta_id(self) -> int:
+        """Busca o ID da primeira conta bancária válida no IDDAS."""
+        try:
+            url = f"{self.base_url}/conta"
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(url, headers=self._get_headers())
+                if resp.status_code == 200:
+                    data = resp.json()
+                    items = data if isinstance(data, list) else data.get("data", [])
+                    if isinstance(items, list) and len(items) > 0:
+                        conta_id = items[0].get("id")
+                        logger.info(f"[IDDAS API] Conta bancária encontrada ID: {conta_id}")
+                        return int(conta_id)
+        except Exception as e:
+            logger.warning(f"[IDDAS API] Erro ao buscar conta bancária: {e}")
+
+        return config.DEFAULT_CONTA_ID
+
+    async def lançar_receita(self, cliente_id: int, valor: float, localizador: str, forma_pagamento_id: int = None, conta_id: int = None) -> Optional[int]:
         """Lança o valor da VENDA no módulo financeiro (Receita)."""
         if valor <= 0:
             return None
@@ -193,15 +234,19 @@ class IddasApiClient:
         url = f"{self.base_url}/receita"
         today = datetime.now().strftime("%Y-%m-%d")
 
+        if not conta_id:
+            conta_id = await self.buscar_primeira_conta_id()
+
         payload = {
             "pessoa": cliente_id,
-            "conta": config.DEFAULT_CONTA_ID,
+            "conta": conta_id,
             "categoria": config.DEFAULT_CATEGORIA_RECEITA_ID,
             "descricao": f"Venda Bilhete Aéreo {localizador}".strip(),
             "lancamento": today,
             "vencimento": today,
+            "pagamento": today,
             "forma_lancamento": "N",
-            "forma_pagamento": config.DEFAULT_FORMA_PAGAMENTO_ID,
+            "forma_pagamento": forma_pagamento_id or config.DEFAULT_FORMA_PAGAMENTO_ID,
             "valor": valor,
             "parcela": 1
         }
@@ -217,7 +262,7 @@ class IddasApiClient:
                 logger.error(f"[IDDAS API] Erro ao lançar receita: {resp.text}")
                 return None
 
-    async def lançar_despesa(self, fornecedor_id: int, valor: float, localizador: str) -> Optional[int]:
+    async def lançar_despesa(self, fornecedor_id: int, valor: float, localizador: str, forma_pagamento_id: int = None, conta_id: int = None) -> Optional[int]:
         """Lança o valor de CUSTO no módulo financeiro (Despesa)."""
         if valor <= 0:
             return None
@@ -225,15 +270,19 @@ class IddasApiClient:
         url = f"{self.base_url}/despesa"
         today = datetime.now().strftime("%Y-%m-%d")
 
+        if not conta_id:
+            conta_id = await self.buscar_primeira_conta_id()
+
         payload = {
             "pessoa": fornecedor_id,
-            "conta": config.DEFAULT_CONTA_ID,
+            "conta": conta_id,
             "categoria": config.DEFAULT_CATEGORIA_DESPESA_ID,
             "descricao": f"Custo Emissão Bilhete {localizador}".strip(),
             "lancamento": today,
             "vencimento": today,
+            "pagamento": today,
             "forma_lancamento": "N",
-            "forma_pagamento": config.DEFAULT_FORMA_PAGAMENTO_ID,
+            "forma_pagamento": forma_pagamento_id or config.DEFAULT_FORMA_PAGAMENTO_ID,
             "valor": valor,
             "parcela": 1
         }
